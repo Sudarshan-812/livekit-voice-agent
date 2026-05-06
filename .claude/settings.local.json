@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npx create-next-app@latest frontend --typescript --tailwind --eslint --app --no-src-dir --import-alias \"@/*\" --yes)",
+      "Bash(mkdir -p C:/Users/mrsud/voice-ai-agent/backend)",
+      "Bash(python -m venv .venv)",
+      "Bash(npm install *)"
+    ]
+  }
+}
