@@ -14,7 +14,8 @@
       "PowerShell(& \"C:\\\\Users\\\\mrsud\\\\voice-ai-agent\\\\.venv\\\\Scripts\\\\pip.exe\" index versions chromadb 2>&1 | Select-Object -First 5 | ForEach-Object { $_.ToString\\(\\) })",
       "PowerShell($result = & \"C:\\\\Users\\\\mrsud\\\\voice-ai-agent\\\\.venv\\\\Scripts\\\\pip.exe\" install -r \"C:\\\\Users\\\\mrsud\\\\voice-ai-agent\\\\backend\\\\requirements.txt\" 2>&1; $result | Select-Object -Last 40 | ForEach-Object { $_.ToString\\(\\) })",
       "PowerShell(& \"C:\\\\Users\\\\mrsud\\\\voice-ai-agent\\\\.venv\\\\Scripts\\\\python.exe\" -c \"import fastapi, livekit.agents, livekit.plugins.google; print\\('fastapi:', fastapi.__version__\\); print\\('livekit-agents:', livekit.agents.__version__\\); print\\('livekit-plugins-google: OK'\\)\")",
-      "PowerShell(& \"C:\\\\Users\\\\mrsud\\\\voice-ai-agent\\\\.venv\\\\Scripts\\\\python.exe\" -c \"import fastapi, livekit.agents, livekit.plugins.google, chromadb; print\\('fastapi:', fastapi.__version__\\); print\\('livekit-agents:', livekit.agents.__version__\\); print\\('chromadb:', chromadb.__version__\\); print\\('livekit-plugins-google: OK'\\)\")"
+      "PowerShell(& \"C:\\\\Users\\\\mrsud\\\\voice-ai-agent\\\\.venv\\\\Scripts\\\\python.exe\" -c \"import fastapi, livekit.agents, livekit.plugins.google, chromadb; print\\('fastapi:', fastapi.__version__\\); print\\('livekit-agents:', livekit.agents.__version__\\); print\\('chromadb:', chromadb.__version__\\); print\\('livekit-plugins-google: OK'\\)\")",
+      "Bash(python -c \"import livekit.agents; import inspect; from livekit.agents import RunContext; print\\([m for m in dir\\(RunContext\\) if not m.startswith\\('__'\\)]\\)\")"
     ]
   }
 }

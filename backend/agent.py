@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 from typing import Annotated
@@ -37,6 +38,12 @@ async def search_knowledge_base(
     query: Annotated[str, "The search query to look up in the uploaded documents"],
 ) -> str:
     logger.info("Searching knowledge base: %s", query)
+    try:
+        room = context.session.room_io.room
+        payload = json.dumps({"type": "rag_search", "query": query}).encode()
+        await room.local_participant.publish_data(payload, topic="rag-status")
+    except Exception:
+        pass
     return rag.search_knowledge_base(query)
 
 
