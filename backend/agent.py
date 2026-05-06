@@ -61,9 +61,7 @@ async def entrypoint(ctx: JobContext):
             model="gemini-1.5-flash",
             api_key=os.getenv("GEMINI_API_KEY"),
         ),
-        tts=google.TTS(
-            api_key=os.getenv("GEMINI_API_KEY"),
-        ),
+        tts=deepgram.TTS(),
         vad=silero.VAD.load(),
     )
 
