@@ -4,7 +4,17 @@
       "Bash(npx create-next-app@latest frontend --typescript --tailwind --eslint --app --no-src-dir --import-alias \"@/*\" --yes)",
       "Bash(mkdir -p C:/Users/mrsud/voice-ai-agent/backend)",
       "Bash(python -m venv .venv)",
-      "Bash(npm install *)"
+      "Bash(npm install *)",
+      "Bash(Get-ChildItem -Path \"C:\\\\Users\\\\mrsud\\\\voice-ai-agent\\\\backend\" -Recurse -Exclude \".venv\" -File)",
+      "Bash(Select-Object FullName)",
+      "Bash(Sort-Object FullName)",
+      "PowerShell(& \"C:\\\\Users\\\\mrsud\\\\voice-ai-agent\\\\.venv\\\\Scripts\\\\pip.exe\" install -r \"C:\\\\Users\\\\mrsud\\\\voice-ai-agent\\\\backend\\\\requirements.txt\" 2>&1)",
+      "PowerShell(Get-Command *)",
+      "PowerShell($result = & \"C:\\\\Users\\\\mrsud\\\\voice-ai-agent\\\\.venv\\\\Scripts\\\\pip.exe\" install -r \"C:\\\\Users\\\\mrsud\\\\voice-ai-agent\\\\backend\\\\requirements.txt\" 2>&1 | Select-Object -Last 30; $result | ForEach-Object { $_.ToString\\(\\) })",
+      "PowerShell(& \"C:\\\\Users\\\\mrsud\\\\voice-ai-agent\\\\.venv\\\\Scripts\\\\pip.exe\" index versions chromadb 2>&1 | Select-Object -First 5 | ForEach-Object { $_.ToString\\(\\) })",
+      "PowerShell($result = & \"C:\\\\Users\\\\mrsud\\\\voice-ai-agent\\\\.venv\\\\Scripts\\\\pip.exe\" install -r \"C:\\\\Users\\\\mrsud\\\\voice-ai-agent\\\\backend\\\\requirements.txt\" 2>&1; $result | Select-Object -Last 40 | ForEach-Object { $_.ToString\\(\\) })",
+      "PowerShell(& \"C:\\\\Users\\\\mrsud\\\\voice-ai-agent\\\\.venv\\\\Scripts\\\\python.exe\" -c \"import fastapi, livekit.agents, livekit.plugins.google; print\\('fastapi:', fastapi.__version__\\); print\\('livekit-agents:', livekit.agents.__version__\\); print\\('livekit-plugins-google: OK'\\)\")",
+      "PowerShell(& \"C:\\\\Users\\\\mrsud\\\\voice-ai-agent\\\\.venv\\\\Scripts\\\\python.exe\" -c \"import fastapi, livekit.agents, livekit.plugins.google, chromadb; print\\('fastapi:', fastapi.__version__\\); print\\('livekit-agents:', livekit.agents.__version__\\); print\\('chromadb:', chromadb.__version__\\); print\\('livekit-plugins-google: OK'\\)\")"
     ]
   }
 }

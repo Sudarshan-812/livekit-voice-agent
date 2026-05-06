@@ -1,5 +1,11 @@
+# Environments & Keys
 .env
-node_modules/
-__pycache__/
-venv/
-.next/
+backend/.venv/
+backend/__pycache__/
+
+# Node
+frontend/node_modules/
+frontend/.next/
+
+# OS Files
+.DS_Store
