@@ -83,7 +83,7 @@ This starts:
 
 ## Known Limitations & Tradeoffs
 
-- **In-Memory Vector Store:** ChromaDB is configured as an ephemeral, in-memory client. Uploaded documents do not persist across backend restarts.
+- **Persistent Vector Store:** ChromaDB uses a `PersistentClient` (stored in `backend/chroma_data/`). Uploaded documents survive backend restarts, but all documents share a single collection — there is no per-session or per-user isolation.
 - **Native Chunking:** The RAG ingestion relies on a custom, pure-Python character-overlap chunker. While fast and minimizing dependencies, it does not currently use semantic boundary detection.
-- **Single Collection:** All uploaded documents share a single ChromaDB collection. There is no per-session or per-document isolation.
+- **Single Collection:** All uploaded documents share a single ChromaDB collection with no per-session or per-document isolation. Clearing the KB requires deleting `backend/chroma_data/`.
 - **CORS:** CORS is open (`*`) for ease of local and Docker development. Restrict origins before any production deployment.

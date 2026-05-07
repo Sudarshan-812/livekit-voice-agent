@@ -1,3 +1,4 @@
+import json
 import os
 import uuid
 
@@ -6,6 +7,8 @@ from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from livekit import api as livekit_api
 from rag import extract_text_from_pdf, chunk_text, store_chunks
+
+DEFAULT_VOICE = "aura-2-andromeda-en"
 
 load_dotenv()
 
@@ -42,8 +45,9 @@ async def upload_pdf(file: UploadFile = File(...)):
 
 
 @app.get("/get-token")
-async def get_token(system_prompt: str = ""):
+async def get_token(system_prompt: str = "", voice: str = DEFAULT_VOICE):
     room_name = f"room-{uuid.uuid4().hex[:8]}"
+    metadata = json.dumps({"system_prompt": system_prompt, "voice": voice})
     token = (
         livekit_api.AccessToken(
             api_key=os.getenv("LIVEKIT_API_KEY"),
@@ -51,7 +55,7 @@ async def get_token(system_prompt: str = ""):
         )
         .with_grants(livekit_api.VideoGrants(room_join=True, room=room_name))
         .with_identity("user")
-        .with_metadata(system_prompt)
+        .with_metadata(metadata)
         .to_jwt()
     )
     return {

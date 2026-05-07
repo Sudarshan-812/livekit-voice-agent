@@ -1,4 +1,5 @@
 import io
+import os
 from typing import List
 
 import chromadb
@@ -10,7 +11,11 @@ CHUNK_SIZE = 500
 CHUNK_OVERLAP = 50
 TOP_K = 3
 
-_chroma_client = chromadb.EphemeralClient()
+# Persist to disk so uploads survive backend restarts.
+_CHROMA_PATH = os.path.join(os.path.dirname(__file__), "chroma_data")
+_chroma_client = chromadb.PersistentClient(path=_CHROMA_PATH)
+# DefaultEmbeddingFunction uses all-MiniLM-L6-v2 via chromadb's bundled ONNX runtime —
+# no separate sentence-transformers install required.
 _collection = _chroma_client.get_or_create_collection(
     name=COLLECTION_NAME,
     embedding_function=DefaultEmbeddingFunction(),
@@ -40,9 +45,14 @@ def store_chunks(chunks: List[str], source_name: str) -> None:
 
 
 def search_knowledge_base(query: str) -> str:
-    count = _collection.count()
-    if count == 0:
-        return ""
-    results = _collection.query(query_texts=[query], n_results=min(TOP_K, count))
-    docs = results.get("documents", [[]])[0]
-    return "\n\n---\n\n".join(docs)
+    try:
+        count = _collection.count()
+        if count == 0:
+            return "No documents have been uploaded yet."
+        results = _collection.query(query_texts=[query], n_results=min(TOP_K, count))
+        docs = results.get("documents", [[]])[0]
+        if not docs:
+            return "No relevant information found in the uploaded documents."
+        return "\n\n---\n\n".join(docs)
+    except Exception as e:
+        return f"Search failed: {e}"
