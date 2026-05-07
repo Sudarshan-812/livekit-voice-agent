@@ -24,7 +24,12 @@
       "Bash(npx tsc *)",
       "Bash(python -c \"import livekit_plugins.deepgram; print\\(livekit_plugins.deepgram.__file__\\)\")",
       "PowerShell(python -c \"import site; print\\(site.getsitepackages\\(\\)\\)\")",
-      "Bash(python -c \"import livekit.plugins.deepgram.tts as t; import inspect; print\\(inspect.getsource\\(t\\)\\)\")"
+      "Bash(python -c \"import livekit.plugins.deepgram.tts as t; import inspect; print\\(inspect.getsource\\(t\\)\\)\")",
+      "Bash(.venv\\\\Scripts\\\\python.exe -c \"import livekit.agents; print\\(livekit.agents.__version__\\)\")",
+      "PowerShell(Stop-Process *)",
+      "PowerShell(Start-Process -FilePath \"C:\\\\Users\\\\mrsud\\\\voice-ai-agent\\\\backend\\\\.venv\\\\Scripts\\\\python.exe\" -ArgumentList \"agent.py\", \"start\" -WorkingDirectory \"C:\\\\Users\\\\mrsud\\\\voice-ai-agent\\\\backend\" -WindowStyle Normal; Write-Host \"Agent worker restarted\")",
+      "Bash(Get-ChildItem *)",
+      "Bash(find *)"
     ]
   }
 }
