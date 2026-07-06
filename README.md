@@ -1,6 +1,21 @@
-# Real-Time Voice AI Agent (LiveKit + RAG)
+# Nexus — Real-Time Voice AI Agent (LiveKit + RAG)
 
 An end-to-end real-time voice agent built with LiveKit, FastAPI, and Next.js. The agent is capable of real-time voice conversations and utilizes Retrieval-Augmented Generation (RAG) to answer questions based on uploaded PDF documents.
+
+## Real-Time Telemetry Matrix
+
+End-to-end latency budget from voice-in to audio-out. Each stage is independently monitored and has a hard P95 target.
+
+| Stage | Component | P50 Target | P95 Target | Notes |
+|---|---|---|---|---|
+| **VAD** | Silero VAD | 20 ms | 40 ms | Local inference; no network hop |
+| **STT** | Deepgram Nova-2 | 80 ms | 120 ms | Streaming partial transcripts |
+| **LLM** | Groq (llama-3.3-70b) | 120 ms | 180 ms | Time-to-first-token via Groq LPU |
+| **TTS** | Deepgram Aura-2 | 90 ms | 150 ms | Streaming synthesis; first chunk |
+| **Network** | LiveKit WebRTC | 20 ms | 45 ms | Regional relay; TURN fallback |
+| **Total** | Full pipeline | **330 ms** | **~535 ms** | Barge-in cuts this to VAD+Network |
+
+> **Barge-in:** When the user interrupts, the pipeline short-circuits at VAD + Network (~65 ms) — all downstream LLM/TTS work is cancelled immediately via `asyncio.Task.cancel()`.
 
 ## Tech Stack
 
