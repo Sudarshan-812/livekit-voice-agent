@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import json
 import logging
 import os
@@ -19,7 +20,9 @@ from livekit.agents import (
 from livekit.plugins import deepgram, silero
 
 import rag
+from livekit_audio_publisher import publish_audio_track
 from llm_provider import build_llm
+from tts_streamer import SHUTDOWN, TURN_END, TTSConfig, stream_tts_worker
 
 load_dotenv(find_dotenv())
 
@@ -232,6 +235,36 @@ async def search_knowledge_base(
     return await asyncio.to_thread(rag.search_knowledge_base, query)
 
 
+# ── Custom-TTS Agent ────────────────────────────────────────────────────────
+
+class NexusAgent(Agent):
+    """Agent whose speech is synthesized by tts_streamer.py's streaming TTS
+    worker instead of AgentSession's built-in tts_node.
+
+    AgentSession invokes tts_node once per turn, which would mean opening a
+    fresh provider WebSocket per response — tts_streamer.py is built around
+    one persistent connection across the whole session instead. So this taps
+    llm_node purely as a forwarder: every content delta is pushed onto
+    tts_text_queue as it streams (for clause-level, low-latency synthesis),
+    while the original chunks are yielded through completely unchanged, so
+    AgentSession's tool-calling, chat history, and turn/state tracking work
+    exactly as they would with the default implementation. Audio playback
+    for this session is disabled at the AgentSession level (see entrypoint)
+    so tts_node is never actually invoked.
+    """
+
+    def __init__(self, *, instructions: str, tools: list, tts_text_queue: "asyncio.Queue") -> None:
+        super().__init__(instructions=instructions, tools=tools)
+        self._tts_text_queue = tts_text_queue
+
+    async def llm_node(self, chat_ctx, tools, model_settings):
+        async for chunk in super().llm_node(chat_ctx, tools, model_settings):
+            if chunk.delta and chunk.delta.content:
+                await self._tts_text_queue.put(chunk.delta.content)
+            yield chunk
+        await self._tts_text_queue.put(TURN_END)
+
+
 # ── Entrypoint ────────────────────────────────────────────────────────────────
 
 async def entrypoint(ctx: JobContext) -> None:
@@ -246,13 +279,22 @@ async def entrypoint(ctx: JobContext) -> None:
         meta = {}
 
     instructions = meta.get("system_prompt", "").strip() or SYSTEM_PROMPT
-    voice = meta.get("voice", "aura-2-andromeda-en")
-    logger.info("voice model: %s", voice)
+    tts_config = TTSConfig.from_env()
+    logger.info(
+        "tts provider: %s (voice=%s, sample_rate=%d)",
+        tts_config.provider,
+        tts_config.voice,
+        tts_config.sample_rate,
+    )
 
+    # TTS is not wired through AgentSession's tts= plugin — audio output is
+    # produced entirely by our own persistent stream_tts_worker (see below),
+    # since it holds one WebSocket open across the whole session rather than
+    # reconnecting per turn the way AgentSession's tts_node would.
     session = AgentSession(
         stt=deepgram.STT(),
         llm=build_llm(),
-        tts=deepgram.TTS(model=voice),
+        tts=None,
         vad=silero.VAD.load(
             activation_threshold=0.35,
             min_silence_duration=0.4,
@@ -263,6 +305,31 @@ async def entrypoint(ctx: JobContext) -> None:
     # the first speech event fires before the handlers are registered.
     interrupt_ctrl = InterruptController(session)
     watchdog = IdleWatchdog(ctx)
+
+    # ── Streaming TTS pipeline ──────────────────────────────────────────────
+    # text_queue: LLM token deltas in (from NexusAgent.llm_node)
+    # audio_out_queue: raw PCM16 bytes out, published to a LiveKit audio track
+    # Both share interrupt_ctrl.interrupt_event for barge-in — the same
+    # signal VAD onset already fires, so a user interrupting the agent
+    # purges audio/text buffers and resets the TTS connection with no extra
+    # wiring beyond what InterruptController already does.
+    tts_text_queue: asyncio.Queue = asyncio.Queue()
+    tts_audio_queue: asyncio.Queue = asyncio.Queue()
+
+    tts_worker_task = asyncio.ensure_future(
+        stream_tts_worker(
+            tts_text_queue,
+            tts_audio_queue,
+            interrupt_ctrl.interrupt_event,
+            config=tts_config,
+        )
+    )
+    audio_publish_task = await publish_audio_track(
+        ctx.room,
+        tts_audio_queue,
+        interrupt_ctrl.interrupt_event,
+        sample_rate=tts_config.sample_rate,
+    )
 
     # ── Event wiring ──────────────────────────────────────────────────────────
 
@@ -302,22 +369,32 @@ async def entrypoint(ctx: JobContext) -> None:
     interrupt_ctrl.start()
     watchdog.start()
 
-    agent = Agent(
+    agent = NexusAgent(
         instructions=instructions,
         tools=[search_knowledge_base],
+        tts_text_queue=tts_text_queue,
     )
 
     await session.start(agent, room=ctx.room)
+    # tts_node is only ever called when output.audio_enabled is True — since
+    # our own publish_audio_track already owns the room's audio track, make
+    # sure AgentSession never tries to synthesize (or publish) audio itself.
+    session.output.set_audio_enabled(False)
     logger.info(
         "session started — barge-in controller and idle watchdog (%.0fs) active",
         IDLE_TIMEOUT_SECONDS,
     )
 
-    session.say(
+    greeting = (
         "Hello! I'm Nexus, ready to help. You can ask me anything, "
-        "or about your uploaded documents.",
-        allow_interruptions=True,
+        "or about your uploaded documents."
     )
+    # session.say() still drives chat history / agent_state bookkeeping (its
+    # own audio path is a no-op now that output.audio is disabled) — the
+    # actual speech comes from pushing the same text through our TTS worker.
+    session.say(greeting, allow_interruptions=True)
+    await tts_text_queue.put(greeting)
+    await tts_text_queue.put(TURN_END)
 
     # ── Keep entrypoint alive until the room disconnects ──────────────────────
     # Using a Future gated on the "disconnected" room event rather than a sleep
@@ -338,6 +415,14 @@ async def entrypoint(ctx: JobContext) -> None:
         logger.info("session ending — running cleanup for %s", session_id)
         await interrupt_ctrl.stop()
         await watchdog.stop()
+
+        await tts_text_queue.put(SHUTDOWN)
+        with contextlib.suppress(asyncio.TimeoutError):
+            await asyncio.wait_for(tts_worker_task, timeout=3)
+        await tts_audio_queue.put(SHUTDOWN)
+        with contextlib.suppress(asyncio.TimeoutError):
+            await asyncio.wait_for(audio_publish_task, timeout=3)
+
         # FinOps: record final session cost (replace 0s with real counters)
         await track_cost(session_id, prompt_tokens=0, audio_seconds=0.0)
 

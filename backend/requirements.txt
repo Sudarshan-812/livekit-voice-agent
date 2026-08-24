@@ -10,3 +10,5 @@ PyPDF2==3.0.1
 livekit-plugins-deepgram
 livekit-plugins-openai
 openai
+websockets
+msgpack

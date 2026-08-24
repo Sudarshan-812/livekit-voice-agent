@@ -1,0 +1,3 @@
+INFO:     Will watch for changes in these directories: ['C:\\Users\\mrsud\\voice-ai-agent\\backend']
+INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+INFO:     Started reloader process [12432] using WatchFiles

@@ -11,18 +11,18 @@ End-to-end latency budget from voice-in to audio-out. Each stage is independentl
 | **VAD** | Silero VAD | 20 ms | 40 ms | Local inference; no network hop |
 | **STT** | Deepgram Nova-2 | 80 ms | 120 ms | Streaming partial transcripts |
 | **LLM** | Groq (llama-3.3-70b) | 120 ms | 180 ms | Time-to-first-token via Groq LPU |
-| **TTS** | Deepgram Aura-2 | 90 ms | 150 ms | Streaming synthesis; first chunk |
+| **TTS** | Fish Audio / Sarvam (WS) | 90 ms | 150 ms | Direct WebSocket stream; first chunk |
 | **Network** | LiveKit WebRTC | 20 ms | 45 ms | Regional relay; TURN fallback |
 | **Total** | Full pipeline | **330 ms** | **~535 ms** | Barge-in cuts this to VAD+Network |
 
-> **Barge-in:** When the user interrupts, the pipeline short-circuits at VAD + Network (~65 ms) — all downstream LLM/TTS work is cancelled immediately via `asyncio.Task.cancel()`.
+> **Barge-in:** When the user interrupts, the pipeline short-circuits at VAD + Network (~65 ms). LLM generation is cancelled via `session.interrupt()`; the TTS worker purges its audio/text queues and clears the LiveKit audio source's playout buffer (`AudioSource.clear_queue()`), then reconnects — neither Fish Audio nor Sarvam expose an in-place "cancel this utterance" message.
 
 ## Tech Stack
 
 - **WebRTC/Orchestration:** LiveKit
 - **STT:** Deepgram
 - **LLM:** Any OpenAI-compatible endpoint via `LLM_BASE_URL`/`LLM_MODEL` (Groq, Cerebras, etc. — see [Real-Time Telemetry Matrix](#real-time-telemetry-matrix))
-- **TTS:** Deepgram Aura-2
+- **TTS:** Direct WebSocket streaming via `TTS_PROVIDER`/`TTS_VOICE` (Fish Audio or Sarvam — see [Streaming TTS Layer](#streaming-tts-layer))
 - **Vector Store:** ChromaDB (In-Memory)
 - **Backend:** FastAPI (Python)
 - **Frontend:** Next.js 15 (React) + Tailwind
@@ -41,6 +41,12 @@ DEEPGRAM_API_KEY=your_deepgram_key
 LLM_BASE_URL=https://api.groq.com/openai/v1   # or https://api.cerebras.ai/v1
 LLM_API_KEY=your_llm_provider_key
 LLM_MODEL=llama-3.3-70b-versatile
+
+# Streaming TTS — direct WebSocket connection to Fish Audio or Sarvam
+TTS_PROVIDER=fish                              # or sarvam
+TTS_API_KEY=your_tts_provider_key
+TTS_VOICE=default
+TTS_SAMPLE_RATE=24000
 ```
 
 ### LLM Inference Layer
@@ -65,6 +71,33 @@ Unit tests for the streaming layer (mocked provider, no network calls):
 ```bash
 cd backend
 python -m unittest test_llm_stream -v
+```
+
+### Streaming TTS Layer
+
+`backend/tts_streamer.py` connects directly to a provider's WebSocket streaming API —
+Fish Audio (`wss://api.fish.audio/v1/tts/live`, MessagePack framing) or Sarvam
+(`wss://api.sarvam.ai/text-to-speech/ws`, JSON framing) — instead of a batch/REST TTS
+call. `stream_tts_worker(text_queue, audio_out_queue, interruption_event)` buffers
+incoming LLM tokens into clauses (flushed on `, . ? ! \n`), streams each clause into a
+persistent WebSocket connection, and pushes raw PCM16 audio bytes onto `audio_out_queue`
+the instant they arrive — no sentence-level batching on the way out either. On barge-in
+(`interruption_event`) it purges both queues and reconnects, since neither provider
+exposes an in-place "cancel this utterance" message. A socket drop mid-stream triggers
+exponential-backoff reconnect, falling back to `TTS_FALLBACK_PROVIDER` if the primary
+stays unreachable.
+
+`backend/livekit_audio_publisher.py` is the consumer side: it re-chunks the provider's
+bursty byte deliveries into uniform frames for `livekit.rtc.AudioSource`, whose own
+internal playout buffer (`queue_size_ms`) absorbs network/provider jitter without
+stuttering, and calls `AudioSource.clear_queue()` on barge-in to drop already-buffered
+audio immediately.
+
+Unit tests (in-memory fake provider client, no network calls):
+
+```bash
+cd backend
+python -m unittest test_tts_streamer -v
 ```
 
 ## Setup & Run Instructions (Local)
