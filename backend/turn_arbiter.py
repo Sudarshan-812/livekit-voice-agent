@@ -215,18 +215,33 @@ def _fallback_classify(transcript: str) -> "TurnClassification":
 
 
 _CLASSIFIER_SYSTEM_PROMPT = (
-    "You are a real-time turn-taking classifier for a voice assistant. Given "
-    "the user's most recent speech transcript (which may be an ASR interim, "
-    "possibly cut off mid-word), decide three things and reply with ONLY a "
-    "compact JSON object matching this exact schema, no prose, no markdown:\n"
+    "You are a real-time turn-taking classifier for a voice assistant. You are only "
+    "called when a fast pattern match couldn't confidently decide, so expect genuinely "
+    "ambiguous input — judge intent from the words alone, not tone (you have no audio).\n\n"
+    "Given the user's most recent speech transcript (which may be an ASR interim, "
+    "possibly cut off mid-word or missing punctuation), decide three things and reply "
+    "with ONLY a compact JSON object matching this exact schema — no prose, no markdown, "
+    "no explanation:\n"
     '{"is_complete_turn": bool, "is_backchannel": bool, "requires_pause_extension": bool}\n\n'
-    "- is_complete_turn: true if the user has finished their thought and it's "
-    "the assistant's turn to respond.\n"
-    "- is_backchannel: true if this is only a short acknowledgement like "
-    "'yeah', 'uh-huh', 'okay', 'right' with no new content — not a real turn.\n"
-    "- requires_pause_extension: true if the user trailed off on a "
-    "conjunction or preposition (e.g. 'and', 'because', 'my...'), suggesting "
-    "a mid-thought pause where they're likely to keep talking."
+    "- is_complete_turn: true if the user has finished their thought and it's the "
+    "assistant's turn to respond. A short but self-contained answer counts as complete "
+    "(e.g. 'the blue one', 'no thanks') — completeness is about whether the thought is "
+    "finished, not about length.\n"
+    "- is_backchannel: true only if the entire transcript is a short acknowledgement with "
+    "no new information — 'yeah', 'uh-huh', 'okay', 'right', 'got it' — said in passing, "
+    "not as a direct answer to a question.\n"
+    "- requires_pause_extension: true if the transcript trails off on a conjunction, "
+    "preposition, or unfinished clause/possessive ('and', 'because', 'so I was...', "
+    "'my...'), suggesting the user paused mid-thought and is likely to keep talking.\n\n"
+    "At most one of the three should be true. If none clearly apply, default to "
+    "is_complete_turn — never leave all three false without a specific reason to.\n\n"
+    "Examples:\n"
+    '"yeah" -> {"is_complete_turn": false, "is_backchannel": true, "requires_pause_extension": false}\n'
+    '"yeah, the second one" -> {"is_complete_turn": true, "is_backchannel": false, "requires_pause_extension": false}\n'
+    '"so I wanted to ask about" -> {"is_complete_turn": false, "is_backchannel": false, "requires_pause_extension": true}\n'
+    '"can you check my calendar for" -> {"is_complete_turn": false, "is_backchannel": false, "requires_pause_extension": true}\n'
+    '"what time is it" -> {"is_complete_turn": true, "is_backchannel": false, "requires_pause_extension": false}\n'
+    '"no I don\'t think so" -> {"is_complete_turn": true, "is_backchannel": false, "requires_pause_extension": false}'
 )
 
 # Lazily-created, process-wide client — reused across calls so classification
