@@ -1,4 +1,4 @@
-# Nexus — Real-Time Voice AI Agent (LiveKit + RAG)
+# Nexus (LiveKit + RAG Voice Agent)
 
 An end-to-end real-time voice agent built with LiveKit, FastAPI, and Next.js. The agent is capable of real-time voice conversations and utilizes Retrieval-Augmented Generation (RAG) to answer questions based on uploaded PDF documents.
 
@@ -21,8 +21,8 @@ End-to-end latency budget from voice-in to audio-out. Each stage is independentl
 
 - **WebRTC/Orchestration:** LiveKit
 - **STT:** Deepgram
-- **LLM:** Gemini 1.5 Flash
-- **TTS:** Google TTS
+- **LLM:** Any OpenAI-compatible endpoint via `LLM_BASE_URL`/`LLM_MODEL` (Groq, Cerebras, etc. — see [Real-Time Telemetry Matrix](#real-time-telemetry-matrix))
+- **TTS:** Deepgram Aura-2
 - **Vector Store:** ChromaDB (In-Memory)
 - **Backend:** FastAPI (Python)
 - **Frontend:** Next.js 15 (React) + Tailwind
@@ -35,8 +35,36 @@ Create a `.env` file in the root (or `backend/`) directory based on `.env.exampl
 LIVEKIT_URL=wss://your-project.livekit.cloud
 LIVEKIT_API_KEY=your_api_key
 LIVEKIT_API_SECRET=your_api_secret
-GEMINI_API_KEY=your_gemini_key
 DEEPGRAM_API_KEY=your_deepgram_key
+
+# LLM inference — any OpenAI-compatible chat completions endpoint
+LLM_BASE_URL=https://api.groq.com/openai/v1   # or https://api.cerebras.ai/v1
+LLM_API_KEY=your_llm_provider_key
+LLM_MODEL=llama-3.3-70b-versatile
+```
+
+### LLM Inference Layer
+
+The voice worker's LLM is decoupled from any specific provider — `backend/llm_provider.py`
+builds the LiveKit `openai.LLM` plugin from `LLM_BASE_URL`/`LLM_API_KEY`/`LLM_MODEL`, so
+swapping Groq for Cerebras (or any other OpenAI-compatible endpoint) is a config change,
+not a code change.
+
+`backend/llm_stream.py` provides a standalone, provider-agnostic streaming primitive built
+on `AsyncOpenAI`: tokens are pushed onto an `asyncio.Queue` the instant each delta arrives
+on the wire (no sentence buffering), and `backend/latency.py` records **TTFT** (time to
+first token) and **output TPS** for every stream. Benchmark the configured provider directly:
+
+```bash
+cd backend
+python bench_llm.py "What is the capital of France?"
+```
+
+Unit tests for the streaming layer (mocked provider, no network calls):
+
+```bash
+cd backend
+python -m unittest test_llm_stream -v
 ```
 
 ## Setup & Run Instructions (Local)

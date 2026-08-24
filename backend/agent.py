@@ -16,9 +16,10 @@ from livekit.agents import (
     cli,
     function_tool,
 )
-from livekit.plugins import deepgram, groq, silero
+from livekit.plugins import deepgram, silero
 
 import rag
+from llm_provider import build_llm
 
 load_dotenv(find_dotenv())
 
@@ -250,10 +251,7 @@ async def entrypoint(ctx: JobContext) -> None:
 
     session = AgentSession(
         stt=deepgram.STT(),
-        llm=groq.LLM(
-            model="llama-3.3-70b-versatile",
-            api_key=os.getenv("GROQ_API_KEY"),
-        ),
+        llm=build_llm(),
         tts=deepgram.TTS(model=voice),
         vad=silero.VAD.load(
             activation_threshold=0.35,

@@ -7,5 +7,6 @@ livekit-agents
 livekit-plugins-silero
 chromadb
 PyPDF2==3.0.1
-livekit-plugins-google
 livekit-plugins-deepgram
+livekit-plugins-openai
+openai

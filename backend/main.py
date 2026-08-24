@@ -12,7 +12,7 @@ DEFAULT_VOICE = "aura-2-andromeda-en"
 
 load_dotenv()
 
-app = FastAPI(title="Voice AI Agent API")
+app = FastAPI(title="Nexus API")
 
 app.add_middleware(
     CORSMiddleware,
