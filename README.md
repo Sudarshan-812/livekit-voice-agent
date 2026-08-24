@@ -100,6 +100,32 @@ cd backend
 python -m unittest test_tts_streamer -v
 ```
 
+### Turn-Taking Arbiter
+
+`backend/turn_arbiter.py` addresses two false-positive turn-taking triggers: a user
+backchannel ("yeah", "uh-huh", "okay") getting mistaken for a real turn, and the user
+pausing mid-thought on a conjunction or preposition ("...and", "because", "my...")
+triggering endpointing before they're actually done.
+
+`RollingTranscriptBuffer` keeps the last 3-5s of Deepgram interim/final transcripts
+(timestamp, confidence, terminal-punctuation per event). `classify_turn_intent(transcript)`
+is dual-stage: a regex fast path resolves common backchannels, dangling-connector pauses,
+and obviously-complete sentences in well under a millisecond with zero network calls;
+anything genuinely ambiguous escalates to a bounded-timeout (`TURN_ARBITER_TIMEOUT_MS`,
+default 100ms) structured-JSON call against the same fast LLM client from `llm_stream.py`.
+A timeout, provider error, or malformed response never raises — it falls back to the same
+regex heuristics, so a slow/dead provider can't stall turn-taking. `TurnArbiter` ties the
+two together (`await arbiter.evaluate(text, is_final=...)`). Not yet wired into `agent.py`'s
+STT handling — it's a standalone, tested module ready to plug into
+`on_user_input_transcribed`.
+
+Unit tests (mocked LLM client, no network calls):
+
+```bash
+cd backend
+python -m unittest test_turn_arbiter -v
+```
+
 ## Setup & Run Instructions (Local)
 
 ### 1. Start the Backend API (FastAPI)

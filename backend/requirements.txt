@@ -12,3 +12,4 @@ livekit-plugins-openai
 openai
 websockets
 msgpack
+pydantic
