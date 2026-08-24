@@ -23,6 +23,7 @@ import rag
 from livekit_audio_publisher import publish_audio_track
 from llm_provider import build_llm
 from tts_streamer import SHUTDOWN, TURN_END, TTSConfig, stream_tts_worker
+from turn_arbiter import RollingTranscriptBuffer, classify_turn_intent
 
 load_dotenv(find_dotenv())
 
@@ -72,10 +73,16 @@ class InterruptController:
 
     Architecture
     ────────────
-    VAD fires on_speech_started()
+    SemanticTurnCoordinator decides the user's speech was a real, complete
+    turn (not a backchannel, not a mid-thought pause) and calls trigger()
         → sets interrupt_event (asyncio.Event — zero-copy, sub-millisecond signal)
         → _interrupt_watcher() wakes, cancels registered pipeline tasks
         → calls session.interrupt() to flush the LiveKit outbound audio buffer
+
+    interrupt_event is also watched directly by tts_streamer.stream_tts_worker
+    and livekit_audio_publisher.publish_audio_track, so the same trigger()
+    call purges the TTS text/audio queues and clears the WebRTC audio
+    source's playout buffer — no separate wiring needed for those.
 
     Registered tasks are any asyncio.Tasks we spawn outside AgentSession
     (e.g. custom LLM streaming, TTS chunk prefetch). The session's own LLM/TTS
@@ -100,10 +107,11 @@ class InterruptController:
         task.add_done_callback(self._active_tasks.discard)
         return task
 
-    def on_speech_started(self) -> None:
-        """Call this the exact millisecond VAD detects voice onset."""
+    def trigger(self) -> None:
+        """Fire the barge-in kill switch — call this the moment the turn
+        arbiter decides the user has completed a real turn."""
         if not self.interrupt_event.is_set():
-            logger.info("[barge-in] VAD onset → firing interrupt_event")
+            logger.info("[barge-in] complete turn confirmed → firing interrupt_event")
             self.interrupt_event.set()
 
     async def _interrupt_watcher(self) -> None:
@@ -143,6 +151,121 @@ class InterruptController:
                 await self._watcher_task
             except asyncio.CancelledError:
                 pass
+
+
+# ── Semantic Turn-Taking Arbiter ──────────────────────────────────────────────
+
+BASE_SILENCE_TIMEOUT_S = 0.4
+"""Matches the VAD's own min_silence_duration — by the time "listening" fires,
+this much silence has already elapsed, so it's the effective baseline."""
+
+EXTENDED_SILENCE_TIMEOUT_S = 1.2
+"""Total silence budget when the arbiter detects a mid-thought pause."""
+
+PAUSE_EXTENSION_DELTA_S = EXTENDED_SILENCE_TIMEOUT_S - BASE_SILENCE_TIMEOUT_S
+"""Additional wait beyond the VAD's own 400ms — VAD already spent
+BASE_SILENCE_TIMEOUT_S getting here, so only the delta needs waiting out."""
+
+TRANSCRIPT_WINDOW_SECONDS = 5.0
+
+
+class SemanticTurnCoordinator:
+    """
+    Dual-stage turn-taking arbiter sitting between Silero VAD and the
+    barge-in kill switch — solves "mid-thought pause" and "backchannel
+    interruption" by not committing a user turn the instant VAD reports
+    silence.
+
+    Wiring (see entrypoint):
+      - on_transcript(): fed from every `user_input_transcribed` event,
+        keeps RollingTranscriptBuffer current.
+      - on_speech_started(): fed from `user_state_changed` -> "speaking"
+        (VAD onset). Cancels any pending silence decision — the user kept
+        talking, so there's nothing to commit yet.
+      - on_speech_ended(): fed from `user_state_changed` -> "listening"
+        (VAD silence, already BASE_SILENCE_TIMEOUT_S/400ms in per Silero's
+        min_silence_duration). Classifies the buffered transcript and:
+          * is_backchannel            -> discard; bot audio keeps playing.
+          * requires_pause_extension  -> wait PAUSE_EXTENSION_DELTA_S more
+                                         (400ms -> 1200ms total) before
+                                         committing, cancellable by new speech.
+          * is_complete_turn          -> fire the barge-in kill switch and
+                                         commit the turn to the LLM worker.
+
+    Every decision runs in a single cancellable background task, so a new
+    VAD onset (on_speech_started) or session teardown (aclose) always wins
+    cleanly over an in-flight classification or pause-extension wait —
+    asyncio.CancelledError propagates straight out of _decide() with no
+    dangling task or unclosed socket left behind (the LLM call inside
+    classify_turn_intent is cancelled the same way).
+    """
+
+    def __init__(self, session: AgentSession, interrupt_ctrl: InterruptController) -> None:
+        self._session = session
+        self._interrupt_ctrl = interrupt_ctrl
+        self.buffer = RollingTranscriptBuffer(window_seconds=TRANSCRIPT_WINDOW_SECONDS)
+        self._pending_task: asyncio.Task | None = None
+
+    def on_transcript(self, transcript: str, *, is_final: bool) -> None:
+        self.buffer.add(transcript, is_final=is_final)
+
+    def on_speech_started(self) -> None:
+        self._cancel_pending()
+
+    def on_speech_ended(self) -> None:
+        self._cancel_pending()
+        self._pending_task = asyncio.ensure_future(self._decide())
+
+    def _cancel_pending(self) -> None:
+        if self._pending_task and not self._pending_task.done():
+            self._pending_task.cancel()
+
+    async def _decide(self) -> None:
+        try:
+            transcript = self.buffer.window_text()
+            result = await classify_turn_intent(transcript)
+            logger.info(
+                "[turn-arbiter] transcript=%r complete=%s backchannel=%s extend=%s",
+                transcript,
+                result.is_complete_turn,
+                result.is_backchannel,
+                result.requires_pause_extension,
+            )
+
+            if result.is_backchannel:
+                logger.info("[turn-arbiter] backchannel — discarding, bot audio continues")
+                self._session.clear_user_turn()
+                return
+
+            if result.requires_pause_extension:
+                logger.info(
+                    "[turn-arbiter] mid-thought pause — extending silence timeout %.0fms -> %.0fms",
+                    BASE_SILENCE_TIMEOUT_S * 1000,
+                    EXTENDED_SILENCE_TIMEOUT_S * 1000,
+                )
+                await asyncio.sleep(PAUSE_EXTENSION_DELTA_S)
+                logger.info("[turn-arbiter] extension elapsed with no further speech — committing")
+
+            await self._commit_turn()
+        except asyncio.CancelledError:
+            logger.debug("[turn-arbiter] decision cancelled — user resumed speaking")
+            raise
+
+    async def _commit_turn(self) -> None:
+        # Barge-in kill switch: purges tts_streamer's audio/text queues,
+        # clears the WebRTC playout buffer, and resets the TTS connection —
+        # idempotent/harmless if the bot wasn't actually speaking.
+        self._interrupt_ctrl.trigger()
+        with contextlib.suppress(Exception):
+            await self._session.interrupt()
+        # Route the full user query to the LLM worker.
+        self._session.commit_user_turn(transcript_timeout=2.0)
+
+    async def aclose(self) -> None:
+        self._cancel_pending()
+        if self._pending_task:
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._pending_task
 
 
 # ── Task 3: FinOps Idle Watchdog ──────────────────────────────────────────────
@@ -291,28 +414,40 @@ async def entrypoint(ctx: JobContext) -> None:
     # produced entirely by our own persistent stream_tts_worker (see below),
     # since it holds one WebSocket open across the whole session rather than
     # reconnecting per turn the way AgentSession's tts_node would.
+    # turn_detection="manual" hands end-of-turn control entirely to
+    # SemanticTurnCoordinator below — AgentSession's own automatic
+    # endpointing/interruption-on-activity is disabled (it would otherwise
+    # commit/interrupt on every VAD silence or STT activity, which is
+    # exactly the "backchannel interruption" / "mid-thought pause" problem
+    # this rewire exists to fix). VAD is still required: it's what drives
+    # the raw user_state_changed speaking/listening transitions the
+    # coordinator reacts to, and min_silence_duration=0.4 is the 400ms
+    # baseline silence timeout it extends to 1200ms when needed.
     session = AgentSession(
         stt=deepgram.STT(),
         llm=build_llm(),
         tts=None,
         vad=silero.VAD.load(
             activation_threshold=0.35,
-            min_silence_duration=0.4,
+            min_silence_duration=BASE_SILENCE_TIMEOUT_S,
         ),
+        turn_handling={"turn_detection": "manual"},
     )
 
     # Instantiate controllers before wiring events — prevents a race where
     # the first speech event fires before the handlers are registered.
     interrupt_ctrl = InterruptController(session)
     watchdog = IdleWatchdog(ctx)
+    turn_coordinator = SemanticTurnCoordinator(session, interrupt_ctrl)
 
     # ── Streaming TTS pipeline ──────────────────────────────────────────────
     # text_queue: LLM token deltas in (from NexusAgent.llm_node)
     # audio_out_queue: raw PCM16 bytes out, published to a LiveKit audio track
     # Both share interrupt_ctrl.interrupt_event for barge-in — the same
-    # signal VAD onset already fires, so a user interrupting the agent
-    # purges audio/text buffers and resets the TTS connection with no extra
-    # wiring beyond what InterruptController already does.
+    # signal SemanticTurnCoordinator fires on a confirmed complete turn, so
+    # a real interruption purges audio/text buffers and resets the TTS
+    # connection with no extra wiring beyond what InterruptController and
+    # the coordinator already do.
     tts_text_queue: asyncio.Queue = asyncio.Queue()
     tts_audio_queue: asyncio.Queue = asyncio.Queue()
 
@@ -332,33 +467,38 @@ async def entrypoint(ctx: JobContext) -> None:
     )
 
     # ── Event wiring ──────────────────────────────────────────────────────────
+    # NOTE: "user_speech_started"/"user_speech_ended"/"agent_speech_started"/
+    # "agent_speech_ended" are not real AgentSession event names (the actual
+    # EventTypes are "user_state_changed" and "agent_state_changed" with an
+    # old_state/new_state pair) — those handlers used to silently never
+    # fire. Fixed here as part of wiring in the turn arbiter, since it needs
+    # the real speaking/listening transitions to work at all.
 
-    @session.on("user_speech_started")
-    def on_user_speech_started() -> None:
-        # VAD speech onset — triggers barge-in and resets idle timer.
-        # This is the "exact millisecond" trigger described in the interrupt design.
-        interrupt_ctrl.on_speech_started()
-        watchdog.pulse("user_speech_started")
-
-    @session.on("user_speech_ended")
-    def on_user_speech_ended() -> None:
-        watchdog.pulse("user_speech_ended")
-
-    @session.on("agent_speech_started")
-    def on_agent_speech_started() -> None:
-        watchdog.pulse("agent_speech_started")
-
-    @session.on("agent_speech_ended")
-    def on_agent_speech_ended() -> None:
-        watchdog.pulse("agent_speech_ended")
+    @session.on("user_state_changed")
+    def on_user_state(ev) -> None:
+        if ev.new_state == "speaking":
+            # VAD onset — cancel any pending silence decision, the user
+            # kept talking, so there's nothing to commit yet.
+            turn_coordinator.on_speech_started()
+            watchdog.pulse("user_speech_started")
+        elif ev.new_state == "listening":
+            # VAD silence (already BASE_SILENCE_TIMEOUT_S in) — do NOT
+            # commit immediately, classify first.
+            turn_coordinator.on_speech_ended()
+            watchdog.pulse("user_speech_ended")
 
     @session.on("user_input_transcribed")
     def on_user_input(ev) -> None:
         logger.info("user said [final=%s]: %s", ev.is_final, ev.transcript)
+        turn_coordinator.on_transcript(ev.transcript, is_final=ev.is_final)
 
     @session.on("agent_state_changed")
     def on_state(ev) -> None:
         logger.info("agent state: %s → %s", ev.old_state, ev.new_state)
+        if ev.new_state == "speaking":
+            watchdog.pulse("agent_speech_started")
+        elif ev.old_state == "speaking":
+            watchdog.pulse("agent_speech_ended")
 
     @session.on("error")
     def on_error(ev) -> None:
@@ -413,6 +553,7 @@ async def entrypoint(ctx: JobContext) -> None:
         pass
     finally:
         logger.info("session ending — running cleanup for %s", session_id)
+        await turn_coordinator.aclose()
         await interrupt_ctrl.stop()
         await watchdog.stop()
 

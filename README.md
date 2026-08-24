@@ -114,16 +114,40 @@ and obviously-complete sentences in well under a millisecond with zero network c
 anything genuinely ambiguous escalates to a bounded-timeout (`TURN_ARBITER_TIMEOUT_MS`,
 default 100ms) structured-JSON call against the same fast LLM client from `llm_stream.py`.
 A timeout, provider error, or malformed response never raises — it falls back to the same
-regex heuristics, so a slow/dead provider can't stall turn-taking. `TurnArbiter` ties the
-two together (`await arbiter.evaluate(text, is_final=...)`). Not yet wired into `agent.py`'s
-STT handling — it's a standalone, tested module ready to plug into
-`on_user_input_transcribed`.
+regex heuristics, so a slow/dead provider can't stall turn-taking.
+
+**Wired into `agent.py`** via `SemanticTurnCoordinator`, which sits between Silero VAD and
+the barge-in kill switch. This required `AgentSession(turn_handling={"turn_detection":
+"manual"})` — disabling AgentSession's own automatic endpointing/interruption-on-activity
+entirely, since it would otherwise commit/interrupt on every VAD silence or STT event
+before the arbiter gets a say. VAD onset (`user_state_changed` -> `"speaking"`) cancels any
+pending decision; VAD silence (-> `"listening"`, already 400ms in per Silero's
+`min_silence_duration`) triggers classification of `RollingTranscriptBuffer`'s current text:
+backchannel discards via `session.clear_user_turn()` with bot audio untouched; a mid-thought
+pause waits an additional 800ms (400ms -> 1200ms total) before re-checking, cancellable by
+new speech; a complete turn fires `interrupt_ctrl.trigger()` (purges the TTS worker's queues
+and the WebRTC playout buffer via the same `interrupt_event` from the Streaming TTS Layer
+above) and calls `session.commit_user_turn()` to route the query to the LLM worker.
+
+Fixed along the way: `@session.on("user_speech_started"/"user_speech_ended"/
+"agent_speech_started"/"agent_speech_ended")` were never real AgentSession event names (the
+actual events are `user_state_changed`/`agent_state_changed` with an old/new state pair) —
+those handlers had been silently dead code.
 
 Unit tests (mocked LLM client, no network calls):
 
 ```bash
 cd backend
 python -m unittest test_turn_arbiter -v
+```
+
+End-to-end state-transition simulation against the real `SemanticTurnCoordinator` (fake
+session, no LiveKit room, no network — one scenario per backchannel / complete-turn /
+pause-extension / mid-extension-interruption / LLM-escalation / clean-cancellation):
+
+```bash
+cd backend
+python -m unittest test_turn_orchestrator -v
 ```
 
 ## Setup & Run Instructions (Local)
